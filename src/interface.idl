@@ -1,0 +1,13 @@
+typedef sequence<string> strings;
+
+interface ServerInterface {
+	void setResources( in long cores );
+	void submit( in strings urls, in long tasks, in long parallelTasks,
+	             out long userID );
+	void done( in long taskID );
+	void cancel( in long userID );  
+};
+
+interface TaskInterface {
+	void start( in long taskID );
+}; 

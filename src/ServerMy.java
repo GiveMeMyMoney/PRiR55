@@ -6,6 +6,7 @@ import org.omg.CosNaming.NamingContextHelper;
 import org.omg.PortableServer.POA;
 
 import java.util.Iterator;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -57,7 +58,7 @@ class TasksPerUser {
         this.urlTaskQueue = urlTaskQueue;
     }
 
-    public boolean canRunNextBatch(AtomicInteger actualFreeThreads) {
+    public synchronized boolean canRunNextBatch(AtomicInteger actualFreeThreads) {
         if (isRunning.get() || parallerThreadCount.get() > actualFreeThreads.get() || urlTaskQueue.isEmpty()) {
             return false;
         }
@@ -65,7 +66,7 @@ class TasksPerUser {
     }
 
     //liczba zadań będzie podzielna przez liczbę zadań, które mają być jednocześnie realizowane.
-    public ConcurrentLinkedQueue<Task> getNextBatch() {
+    public  ConcurrentLinkedQueue<Task> getNextBatch() {
         taskInProgress = new ConcurrentLinkedQueue<>();
         for (int i = 0; i < parallerThreadCount.get(); i++) {
             taskInProgress.add(urlTaskQueue.poll());
@@ -74,11 +75,11 @@ class TasksPerUser {
         return taskInProgress;
     }
 
-    public boolean isTaskInProgress(int taskId) {
+    public  boolean isTaskInProgress(int taskId) {
         return taskInProgress.contains(new Task(taskId));
     }
 
-    public void doneTask(int taskId) {
+    public  void doneTask(int taskId) {
         taskInProgress.remove(new Task(taskId));
         if (taskInProgress.isEmpty()) {
             this.isRunning.set(false);
@@ -97,6 +98,7 @@ class TasksPerUser {
 ///MAIN CLASS
 class Server extends ServerInterfacePOA {
     private Object cancelLockHelper = new Object();
+    private Object runningLockHelper = new Object();
     private ExecutorService executorService = Executors.newSingleThreadExecutor();
 
     private ORB ORB;
@@ -121,52 +123,69 @@ class Server extends ServerInterfacePOA {
 
     class TaskRunner implements Runnable {
 
+        DoTask doTask;
+
+        public TaskRunner(DoTask doTask) {
+            this.doTask = doTask;
+        }
+
         @Override
         public void run() {
-            while (true) {
-                //TODO
+            //while (true) {
+                //TODO czasem leca bledy
                 //synchronized (cancelLockHelper) {
-                allTaskQueue.forEach((userId, tasksPerUser) -> {
-                    if (tasksPerUser.canRunNextBatch(actualFreeThreads)) {
-                        System.out.println("TaskRunner UserId: " + userId + " taskowNaRaz: " + tasksPerUser.parallerThreadCount);
-                        ConcurrentLinkedQueue<Task> actualTaskToProcess = tasksPerUser.getNextBatch();
-                        actualTaskToProcess.forEach(task -> {
-                            //TODO synchronized?
-                            actualFreeThreads.decrementAndGet();
-                            //TODO czy synchronicznie czy asynchro
-                            //bo jak synchro to nie odpali wszystkich na raz... wtedy new ThreadDoTask...
-                            System.out.println("doClientTask taskId: " + task.taskId);
-                            //do JOB in new Thread
-                            new Thread(() -> doClientTask(task.taskId, task.url))
-                                    .start();
-                            //taskRunner.doClientTask(task.taskId, task.url);
-                            System.out.println("DONE doClientTask taskId: " + task.taskId);
-
-                        });
-
+                //TODO MAPa nie moze byc modyfikowana gdy jest forEach?
+                ConcurrentLinkedQueue<Task> actualTaskToProcess = new ConcurrentLinkedQueue<>();
+                for (Map.Entry<Integer, TasksPerUser> entry : allTaskQueue.entrySet()) {
+                    TasksPerUser tasksPerUser = entry.getValue();
+                    synchronized (runningLockHelper) {
+                        if (tasksPerUser.canRunNextBatch(actualFreeThreads)) {
+                            System.out.println("TaskRunner UserId: " + entry.getValue() + " taskowNaRaz: " + tasksPerUser.parallerThreadCount);
+                            actualTaskToProcess = tasksPerUser.getNextBatch();
+                            break;
+                        } else {
+                            System.out.println("cos nowego");
+                            System.out.println("actualFreeThreads in RUN: " + actualFreeThreads + " i WTEDY: " + allTaskQueue.size());
+                        }
                     }
+                }
+
+                actualTaskToProcess.forEach(task -> {
+                    //TODO synchronized?
+                    actualFreeThreads.decrementAndGet();
+                    //TODO czy synchronicznie czy asynchro
+                    //bo jak synchro to nie odpali wszystkich na raz... wtedy new ThreadDoTask...
+                    System.out.println("doClientTask taskId: " + task.taskId);
+                    //do JOB in new Thread
+                    new Thread(() -> doTask.doClientTask(task.taskId, task.url))
+                            .start();
+                    //taskRunner.doClientTask(task.taskId, task.url);
+                    System.out.println("DONE doClientTask taskId: " + task.taskId);
                 });
-                //  }
-            }
+            //}
+            //}
         }
     }
 
-    public void doClientTask(int taskID, String url) {
-        //TODO?
-        try {
-            org.omg.CORBA.Object namingContextObj = ORB.resolve_initial_references("NameService");
-            NamingContext namingContext = NamingContextHelper.narrow(namingContextObj);
+    class DoTask {
 
-            NameComponent[] path = {
-                    new NameComponent(url, "Object")
-            };
+        public void doClientTask(int taskID, String url) {
+            //TODO?
+            try {
+                org.omg.CORBA.Object namingContextObj = ORB.resolve_initial_references("NameService");
+                NamingContext namingContext = NamingContextHelper.narrow(namingContextObj);
 
-            org.omg.CORBA.Object envObj = namingContext.resolve(path);
-            //TASK
-            TaskInterface taskInterface = TaskInterfaceHelper.narrow(envObj);
-            taskInterface.start(taskID);
-        } catch (Exception e) {
-            System.out.println(e.getMessage());
+                NameComponent[] path = {
+                        new NameComponent(url, "Object")
+                };
+
+                org.omg.CORBA.Object envObj = namingContext.resolve(path);
+                //TASK
+                TaskInterface taskInterface = TaskInterfaceHelper.narrow(envObj);
+                taskInterface.start(taskID);
+            } catch (Exception e) {
+                System.out.println(e.getMessage());
+            }
         }
     }
 
@@ -195,7 +214,7 @@ class Server extends ServerInterfacePOA {
         this.MAX_THREAD = new AtomicInteger(cores);
         System.out.println("actualFreeThreads: " + actualFreeThreads.get());
 
-        executorService.submit(new TaskRunner());
+        executorService.submit(new TaskRunner(new DoTask()));
     }
 
     @Override
@@ -210,27 +229,29 @@ class Server extends ServerInterfacePOA {
         TasksPerUser tasksPerUser = new TasksPerUser(tasks, parallelTasks, taskQueue);
         allTaskQueue.put(userIdCounter.get(), tasksPerUser);
 
-        executorService.submit(new TaskRunner());
+        executorService.submit(new TaskRunner(new DoTask()));
     }
 
     @Override
     public void done(int taskID) {
-        System.out.println("done taskId: " + taskID);
+        synchronized (runningLockHelper) {
+            System.out.println("done taskId: " + taskID);
 
-        for (Iterator<Integer> itr = allTaskQueue.keySet().iterator(); itr.hasNext(); ) {
-            Integer userId = itr.next();
-            TasksPerUser tasksPerUser = allTaskQueue.get(userId);
-            if (tasksPerUser.isTaskInProgress(taskID)) {
-                tasksPerUser.doneTask(taskID);
-                actualFreeThreads.incrementAndGet();
-                if (tasksPerUser.canRemove()) {
-                    itr.remove();
+            for (Iterator<Integer> itr = allTaskQueue.keySet().iterator(); itr.hasNext(); ) {
+                Integer userId = itr.next();
+                TasksPerUser tasksPerUser = allTaskQueue.get(userId);
+                if (tasksPerUser.isTaskInProgress(taskID)) {
+                    tasksPerUser.doneTask(taskID);
+                    actualFreeThreads.incrementAndGet();
+                    if (tasksPerUser.canRemove()) {
+                        itr.remove();
+                    }
+                    break;
                 }
-                break;
             }
-        }
 
-        executorService.submit(new TaskRunner());
+            executorService.submit(new TaskRunner(new DoTask()));
+        }
     }
 
     @Override
@@ -252,9 +273,9 @@ class Server extends ServerInterfacePOA {
 
 class Start {
 
-    public static void main(String[] argv) {
+    public static void main(String[] args) {
         try {
-            ORB orb = ORB.init(argv, null);
+            ORB orb = ORB.init(args, null);
             POA rootpoa = (POA) orb.resolve_initial_references("RootPOA");
             rootpoa.the_POAManager().activate();
 

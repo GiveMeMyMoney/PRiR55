@@ -11,7 +11,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-class Server extends ServerInterfacePOA {
+class Server2 extends ServerInterfacePOA {
 
     AtomicInteger cores = new AtomicInteger(0);
     AtomicInteger idCounter = new AtomicInteger(0);
@@ -20,14 +20,14 @@ class Server extends ServerInterfacePOA {
     NamingContext namingContext;
     ORB orb;
 
-    Server() {
+    Server2() {
     }
 
-    public Server(NamingContext namingContext) {
+    public Server2(NamingContext namingContext) {
         this.namingContext = namingContext;
     }
 
-    public Server(ORB orb, NamingContext nCont) {
+    public Server2(ORB orb, NamingContext nCont) {
         this.orb = orb;
         this.namingContext = nCont;
     }
@@ -109,7 +109,6 @@ class Server extends ServerInterfacePOA {
 
     interface TaskRunner {
         void runTask(int taskID, String url);
-
     }
 
     class CorbaTaskRunner implements TaskRunner{
@@ -210,7 +209,7 @@ class Server extends ServerInterfacePOA {
 
 }
 
-class Start {
+class Start2 {
 
     public static void main(String[] args) {
         try {
@@ -219,7 +218,7 @@ class Start {
             rootpoa.the_POAManager().activate();
             org.omg.CORBA.Object namingContextObj = orb.resolve_initial_references( "NameService" );
             NamingContext nCont = NamingContextHelper.narrow( namingContextObj );
-            Server server = new Server(orb,nCont);
+            Server2 server = new Server2(orb,nCont);
             org.omg.CORBA.Object ref = rootpoa.servant_to_reference( server );
             System.out.println( orb.object_to_string( ref ) );
 
